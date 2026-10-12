@@ -9,7 +9,9 @@
 //
 // The body is sent as text/plain, so cross-origin use needs no preflight. Messages are delivered
 // at most once: a request returns the pending messages of its client and deletes exactly those
-// rows in the same transaction. Members that stop polling expire after `member_timeout_s`.
+// rows in the same transaction. Members that stop polling expire after `member_timeout_s`. After
+// a leave, polls of the same id are refused for that time, so a poll that was still in flight
+// when the client left cannot add it back.
 // Settings: the defaults below, overridden by an optional config.php next to this file that
 // returns an array.
 
@@ -125,6 +127,8 @@ function realtic_db(array $config): PDO
             $db->exec('CREATE INDEX messages_created ON messages (created)');
             $db->exec('CREATE TABLE history (group_id TEXT NOT NULL, recipient TEXT NOT NULL, sender TEXT NOT NULL,
                 body TEXT NOT NULL, created INTEGER NOT NULL)');
+            $db->exec('CREATE TABLE departed (group_id TEXT NOT NULL, id TEXT NOT NULL, at INTEGER NOT NULL,
+                PRIMARY KEY (group_id, id)) WITHOUT ROWID');
             $db->exec('PRAGMA user_version = 1');
         }
         $db->exec('COMMIT');
@@ -163,6 +167,16 @@ function realtic_exchange(PDO $db, array $config, array $controls, string $group
         $db->prepare('DELETE FROM messages WHERE created < ?')->execute([$now - $config['message_ttl_s'] * 1000]);
         $db->prepare('DELETE FROM history WHERE created < ?')->execute([$now - $config['message_ttl_s'] * 1000]);
         $db->prepare('DELETE FROM members WHERE last_seen < ?')->execute([$alive]);
+        $db->prepare('DELETE FROM departed WHERE at < ?')->execute([$alive]);
+
+        if (!$leave) {
+            $departed = $db->prepare('SELECT 1 FROM departed WHERE group_id = ? AND id = ?');
+            $departed->execute([$group, $id]);
+            if ($departed->fetchColumn()) {
+                $db->exec('ROLLBACK');
+                return ['status' => 410, 'body' => ['error' => 'left'], 'log' => 'after-leave'];
+            }
+        }
 
         $seen = $db->prepare('SELECT 1 FROM members WHERE group_id = ? AND id = ?');
         $seen->execute([$group, $id]);
@@ -211,6 +225,7 @@ function realtic_exchange(PDO $db, array $config, array $controls, string $group
         if ($leave) {
             $db->prepare('DELETE FROM members WHERE group_id = ? AND id = ?')->execute([$group, $id]);
             $db->prepare('DELETE FROM messages WHERE group_id = ? AND recipient = ?')->execute([$group, $id]);
+            $db->prepare('INSERT OR REPLACE INTO departed (group_id, id, at) VALUES (?, ?, ?)')->execute([$group, $id, $now]);
         } else {
             $db->prepare('INSERT INTO members (group_id, id, last_seen) VALUES (?, ?, ?)
                 ON CONFLICT (group_id, id) DO UPDATE SET last_seen = excluded.last_seen')->execute([$group, $id, $now]);
