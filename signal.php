@@ -2,7 +2,7 @@
 // realtic signaling endpoint for plain PHP hosting: repeated polling (pull), no long-lived
 // requests, SQLite storage. One request both sends and receives:
 //
-//   POST signal.php?room=<room>&id=<client id>
+//   POST signal.php?group=<group>&id=<client id>
 //   body     {"send": [{"to": "<id>", "msg": {...}}], "leave": false}
 //   response {"messages": [{"from": "<id>", "msg": {...}}], "members": ["<id>", ...],
 //             "fastMs": 250, "idleMs": 3000}
@@ -24,7 +24,7 @@ const REALTIC_DEFAULTS = [
     'max_body_bytes' => 262144,
     'max_messages' => 64,
     'max_message_bytes' => 65536,
-    'max_room_members' => 64,
+    'max_group_members' => 64,
     'poll_fast_ms' => 250,
     'poll_idle_ms' => 3000,
     'allowed_origins' => [],
@@ -116,14 +116,14 @@ function realtic_db(array $config): PDO
         $db->exec('PRAGMA journal_mode = ' . preg_replace('/[^A-Za-z]/', '', $config['journal_mode']));
         $db->exec('BEGIN IMMEDIATE');
         if ((int) $db->query('PRAGMA user_version')->fetchColumn() === 0) {
-            $db->exec('CREATE TABLE members (room TEXT NOT NULL, id TEXT NOT NULL, last_seen INTEGER NOT NULL,
-                PRIMARY KEY (room, id)) WITHOUT ROWID');
-            $db->exec('CREATE TABLE messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, room TEXT NOT NULL,
+            $db->exec('CREATE TABLE members (group_id TEXT NOT NULL, id TEXT NOT NULL, last_seen INTEGER NOT NULL,
+                PRIMARY KEY (group_id, id)) WITHOUT ROWID');
+            $db->exec('CREATE TABLE messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, group_id TEXT NOT NULL,
                 recipient TEXT NOT NULL, sender TEXT NOT NULL, body TEXT NOT NULL, due INTEGER NOT NULL,
                 created INTEGER NOT NULL)');
-            $db->exec('CREATE INDEX messages_recipient ON messages (room, recipient, seq)');
+            $db->exec('CREATE INDEX messages_recipient ON messages (group_id, recipient, seq)');
             $db->exec('CREATE INDEX messages_created ON messages (created)');
-            $db->exec('CREATE TABLE history (room TEXT NOT NULL, recipient TEXT NOT NULL, sender TEXT NOT NULL,
+            $db->exec('CREATE TABLE history (group_id TEXT NOT NULL, recipient TEXT NOT NULL, sender TEXT NOT NULL,
                 body TEXT NOT NULL, created INTEGER NOT NULL)');
             $db->exec('PRAGMA user_version = 1');
         }
@@ -154,7 +154,7 @@ function realtic_log(array $config, string $line): void
  * Applies one request: stores the sent messages, returns and deletes the pending ones, and
  * updates membership. Returns the response body and log fields.
  */
-function realtic_exchange(PDO $db, array $config, array $controls, string $room, string $id, array $send, bool $leave): array
+function realtic_exchange(PDO $db, array $config, array $controls, string $group, string $id, array $send, bool $leave): array
 {
     $now = realtic_now_ms();
     $alive = $now - $config['member_timeout_s'] * 1000;
@@ -164,21 +164,21 @@ function realtic_exchange(PDO $db, array $config, array $controls, string $room,
         $db->prepare('DELETE FROM history WHERE created < ?')->execute([$now - $config['message_ttl_s'] * 1000]);
         $db->prepare('DELETE FROM members WHERE last_seen < ?')->execute([$alive]);
 
-        $seen = $db->prepare('SELECT 1 FROM members WHERE room = ? AND id = ?');
-        $seen->execute([$room, $id]);
+        $seen = $db->prepare('SELECT 1 FROM members WHERE group_id = ? AND id = ?');
+        $seen->execute([$group, $id]);
         $joined = !$leave && !$seen->fetchColumn();
         if ($joined) {
-            $count = $db->prepare('SELECT COUNT(*) FROM members WHERE room = ?');
-            $count->execute([$room]);
-            if ((int) $count->fetchColumn() >= $config['max_room_members']) {
+            $count = $db->prepare('SELECT COUNT(*) FROM members WHERE group_id = ?');
+            $count->execute([$group]);
+            if ((int) $count->fetchColumn() >= $config['max_group_members']) {
                 $db->exec('ROLLBACK');
-                return ['status' => 403, 'body' => ['error' => 'room full'], 'log' => 'room-full'];
+                return ['status' => 403, 'body' => ['error' => 'group full'], 'log' => 'group-full'];
             }
         }
 
-        $isMember = $db->prepare('SELECT 1 FROM members WHERE room = ? AND id = ?');
-        $insert = $db->prepare('INSERT INTO messages (room, recipient, sender, body, due, created) VALUES (?, ?, ?, ?, ?, ?)');
-        $keep = $db->prepare('INSERT INTO history (room, recipient, sender, body, created) VALUES (?, ?, ?, ?, ?)');
+        $isMember = $db->prepare('SELECT 1 FROM members WHERE group_id = ? AND id = ?');
+        $insert = $db->prepare('INSERT INTO messages (group_id, recipient, sender, body, due, created) VALUES (?, ?, ?, ?, ?, ?)');
+        $keep = $db->prepare('INSERT INTO history (group_id, recipient, sender, body, created) VALUES (?, ?, ?, ?, ?)');
         $kinds = [];
         $sent = 0;
         foreach ($send as $item) {
@@ -191,16 +191,16 @@ function realtic_exchange(PDO $db, array $config, array $controls, string $room,
             if ($body === false || strlen($body) > $config['max_message_bytes']) {
                 continue;
             }
-            $isMember->execute([$room, $to]);
+            $isMember->execute([$group, $to]);
             if (!$isMember->fetchColumn()) {
                 continue;
             }
             $times = $controls['duplicate'] ? 2 : 1;
             for ($i = 0; $i < $times; $i++) {
-                $insert->execute([$room, $to, $id, $body, $now + (int) $controls['delayMs'], $now]);
+                $insert->execute([$group, $to, $id, $body, $now + (int) $controls['delayMs'], $now]);
             }
             if ($controls['redeliver']) {
-                $keep->execute([$room, $to, $id, $body, $now]);
+                $keep->execute([$group, $to, $id, $body, $now]);
             }
             $sent++;
             $kind = is_string($msg['t'] ?? null) ? $msg['t'] : '?';
@@ -209,19 +209,19 @@ function realtic_exchange(PDO $db, array $config, array $controls, string $room,
 
         $messages = [];
         if ($leave) {
-            $db->prepare('DELETE FROM members WHERE room = ? AND id = ?')->execute([$room, $id]);
-            $db->prepare('DELETE FROM messages WHERE room = ? AND recipient = ?')->execute([$room, $id]);
+            $db->prepare('DELETE FROM members WHERE group_id = ? AND id = ?')->execute([$group, $id]);
+            $db->prepare('DELETE FROM messages WHERE group_id = ? AND recipient = ?')->execute([$group, $id]);
         } else {
-            $db->prepare('INSERT INTO members (room, id, last_seen) VALUES (?, ?, ?)
-                ON CONFLICT (room, id) DO UPDATE SET last_seen = excluded.last_seen')->execute([$room, $id, $now]);
+            $db->prepare('INSERT INTO members (group_id, id, last_seen) VALUES (?, ?, ?)
+                ON CONFLICT (group_id, id) DO UPDATE SET last_seen = excluded.last_seen')->execute([$group, $id, $now]);
             if ($joined && $controls['redeliver']) {
-                $db->prepare('INSERT INTO messages (room, recipient, sender, body, due, created)
-                    SELECT room, recipient, sender, body, ?, ? FROM history WHERE room = ? AND recipient = ?')
-                    ->execute([$now, $now, $room, $id]);
+                $db->prepare('INSERT INTO messages (group_id, recipient, sender, body, due, created)
+                    SELECT group_id, recipient, sender, body, ?, ? FROM history WHERE group_id = ? AND recipient = ?')
+                    ->execute([$now, $now, $group, $id]);
             }
-            $pending = $db->prepare('SELECT seq, sender, body FROM messages WHERE room = ? AND recipient = ? AND due <= ?
+            $pending = $db->prepare('SELECT seq, sender, body FROM messages WHERE group_id = ? AND recipient = ? AND due <= ?
                 ORDER BY seq LIMIT 256');
-            $pending->execute([$room, $id, $now]);
+            $pending->execute([$group, $id, $now]);
             $delete = $db->prepare('DELETE FROM messages WHERE seq = ?');
             foreach ($pending->fetchAll(PDO::FETCH_ASSOC) as $row) {
                 $messages[] = ['from' => $row['sender'], 'msg' => json_decode($row['body'], true)];
@@ -229,8 +229,8 @@ function realtic_exchange(PDO $db, array $config, array $controls, string $room,
             }
         }
 
-        $list = $db->prepare('SELECT id FROM members WHERE room = ? ORDER BY id');
-        $list->execute([$room]);
+        $list = $db->prepare('SELECT id FROM members WHERE group_id = ? ORDER BY id');
+        $list->execute([$group]);
         $members = $list->fetchAll(PDO::FETCH_COLUMN);
         $db->exec('COMMIT');
     } catch (Throwable $error) {
@@ -274,10 +274,10 @@ function realtic_main(): void
         realtic_respond(503, ['error' => 'down']);
         return;
     }
-    $room = (string) ($_GET['room'] ?? 'default');
+    $group = (string) ($_GET['group'] ?? 'default');
     $id = (string) ($_GET['id'] ?? '');
-    if (!preg_match(REALTIC_NAME, $room) || !preg_match(REALTIC_NAME, $id)) {
-        realtic_respond(400, ['error' => 'bad room or id']);
+    if (!preg_match(REALTIC_NAME, $group) || !preg_match(REALTIC_NAME, $id)) {
+        realtic_respond(400, ['error' => 'bad group or id']);
         return;
     }
     $raw = (string) file_get_contents('php://input', false, null, 0, $config['max_body_bytes'] + 1);
@@ -294,15 +294,15 @@ function realtic_main(): void
     $leave = ($request['leave'] ?? false) === true;
 
     try {
-        $result = realtic_exchange(realtic_db($config), $config, $controls, $room, $id, $send, $leave);
+        $result = realtic_exchange(realtic_db($config), $config, $controls, $group, $id, $send, $leave);
     } catch (Throwable $error) {
-        realtic_log($config, sprintf('error room=%s id=%s %s', $room, $id, $error->getMessage()));
+        realtic_log($config, sprintf('error group=%s id=%s %s', $group, $id, $error->getMessage()));
         realtic_respond(500, ['error' => 'server error']);
         return;
     }
     realtic_respond($result['status'], $result['body']);
     if (!($result['quiet'] ?? false) || $config['log_polls']) {
-        realtic_log($config, sprintf('%s room=%s id=%s ms=%d addr=%s', $result['log'], $room, $id,
+        realtic_log($config, sprintf('%s group=%s id=%s ms=%d addr=%s', $result['log'], $group, $id,
             (int) round((microtime(true) - $start) * 1000), $_SERVER['REMOTE_ADDR'] ?? '-'));
     }
 }
