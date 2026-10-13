@@ -87,7 +87,7 @@ function realtic_now_ms(): int
 function realtic_now_us(): int
 {
     [$fraction, $seconds] = explode(' ', microtime());
-    return (int) $seconds * 1000000 + (int) floor((float) $fraction * 1000000 + 0.5);
+    return (int) $seconds * 1000000 + (int) substr($fraction, 2, 6);
 }
 
 /** UTC timestamp in the library's log format, yyyy-MM-dd_HH-mm-ss.SSSSSS. */

@@ -3,7 +3,7 @@
 // to one file per group, in arrival order, so a communication problem can be read in one place.
 //
 //   POST log.php?group=<group>&id=<client id>
-//   body {"entries": [{"seq": 1, "time": <UTC ms with a microsecond fraction>, "level": "info",
+//   body {"entries": [{"seq": 1, "timeUs": <integer UTC microseconds>, "level": "info",
 //          "area": "...", "peer": "...", "session": "...", "msg": "...", "data": {...}}]}
 //
 // Each line: receive time, the client's entry time (both UTC, microseconds), client id, #seq,
@@ -31,7 +31,7 @@ function realtic_entry_line(string $received, string $id, array $e): string
         : '';
     $text = sprintf('%-5s [%s]%s %s%s', strtoupper($level), $str($e['area'] ?? null) ?? '?', $ids !== '' ? ' ' . $ids : '',
         substr((string) ($e['msg'] ?? ''), 0, 4096), $data);
-    $time = realtic_format_us((int) floor((float) $e['time'] * 1000 + 0.5));
+    $time = realtic_format_us($e['timeUs']);
     return sprintf("%s %s %s #%d %s\n", $received, $time, $id, (int) ($e['seq'] ?? 0), preg_replace('/[\r\n]+/', ' ', $text));
 }
 
@@ -71,7 +71,7 @@ function realtic_log_main(): void
     }
     $lines = '';
     foreach ($request['entries'] as $e) {
-        if (is_array($e) && is_numeric($e['time'] ?? null)) {
+        if (is_array($e) && is_int($e['timeUs'] ?? null)) {
             $lines .= realtic_entry_line($received, $id, $e);
         }
     }
