@@ -14,4 +14,9 @@ return [
     'log_file' => __DIR__ . '/data/requests.log',
     'log_max_bytes' => 1048576,
     'log_files' => 5,
+    // Directory for log.php (forwardLog): one file per group. Keep it outside the document root,
+    // the logs show addresses and ids of every peer.
+    // 'client_log_dir' => '/var/log/realtic',
+    'client_log_max_bytes' => 16777216,
+    'client_log_files' => 5,
 ];

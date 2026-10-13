@@ -13,7 +13,7 @@
 // a leave, polls of the same id are refused for that time, so a poll that was still in flight
 // when the client left cannot add it back.
 // Settings: the defaults below, overridden by an optional config.php next to this file that
-// returns an array.
+// returns an array. log.php includes this file for its functions and settings.
 
 declare(strict_types=1);
 
@@ -34,12 +34,15 @@ const REALTIC_DEFAULTS = [
     'log_polls' => false,
     'log_max_bytes' => 1048576,
     'log_files' => 5,
+    'client_log_dir' => null,
+    'client_log_max_bytes' => 16777216,
+    'client_log_files' => 5,
     'test_controls' => null,
 ];
 
 const REALTIC_NAME = '/^[A-Za-z0-9_.-]{1,64}$/';
 
-/** Merged settings: defaults, config.php, and REALTIC_TEST_CONTROLS for the test harness. */
+/** Merged settings: defaults, config.php, and the REALTIC_* environment variables of the test harness. */
 function realtic_config(): array
 {
     $config = REALTIC_DEFAULTS;
@@ -54,6 +57,10 @@ function realtic_config(): array
     $db = getenv('REALTIC_DB');
     if ($db !== false && $db !== '') {
         $config['db'] = $db;
+    }
+    $clientLogDir = getenv('REALTIC_CLIENT_LOG_DIR');
+    if ($clientLogDir !== false && $clientLogDir !== '') {
+        $config['client_log_dir'] = $clientLogDir;
     }
     return $config;
 }
@@ -76,11 +83,23 @@ function realtic_now_ms(): int
     return (int) floor(microtime(true) * 1000);
 }
 
-/** UTC timestamp in the library's log format, yyyy-MM-dd_HH-mm-ss.SSS. */
+/** Current UTC time in microseconds since the epoch. */
+function realtic_now_us(): int
+{
+    [$fraction, $seconds] = explode(' ', microtime());
+    return (int) $seconds * 1000000 + (int) floor((float) $fraction * 1000000 + 0.5);
+}
+
+/** UTC timestamp in the library's log format, yyyy-MM-dd_HH-mm-ss.SSSSSS. */
+function realtic_format_us(int $us): string
+{
+    $seconds = intdiv($us, 1000000);
+    return gmdate('Y-m-d_H-i-s', $seconds) . sprintf('.%06d', $us - $seconds * 1000000);
+}
+
 function realtic_utc(): string
 {
-    $t = microtime(true);
-    return gmdate('Y-m-d_H-i-s', (int) $t) . sprintf('.%03d', (int) (($t - floor($t)) * 1000));
+    return realtic_format_us(realtic_now_us());
 }
 
 function realtic_respond(int $status, ?array $body = null): void
@@ -136,22 +155,26 @@ function realtic_db(array $config): PDO
     return $db;
 }
 
-/** Appends one line to the request log and rotates it by size, keeping `log_files` files. */
-function realtic_log(array $config, string $line): void
+/** Appends text to a file and rotates it by size, keeping `$files` files. */
+function realtic_append(string $file, string $text, int $maxBytes, int $files): void
 {
-    $file = $config['log_file'];
-    if (!$file) {
-        return;
-    }
-    if (is_file($file) && filesize($file) > $config['log_max_bytes']) {
-        for ($i = $config['log_files'] - 1; $i >= 1; $i--) {
+    if (is_file($file) && filesize($file) > $maxBytes) {
+        for ($i = $files - 1; $i >= 1; $i--) {
             $from = $i === 1 ? $file : "$file." . ($i - 1);
             if (is_file($from)) {
                 @rename($from, "$file.$i");
             }
         }
     }
-    @file_put_contents($file, realtic_utc() . ' ' . $line . "\n", FILE_APPEND | LOCK_EX);
+    @file_put_contents($file, $text, FILE_APPEND | LOCK_EX);
+}
+
+/** Appends one line to the request log. */
+function realtic_log(array $config, string $line): void
+{
+    if ($config['log_file']) {
+        realtic_append($config['log_file'], realtic_utc() . ' ' . $line . "\n", $config['log_max_bytes'], $config['log_files']);
+    }
 }
 
 /**
@@ -322,4 +345,6 @@ function realtic_main(): void
     }
 }
 
-realtic_main();
+if (!defined('REALTIC_LIBRARY')) {
+    realtic_main();
+}
