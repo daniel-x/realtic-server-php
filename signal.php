@@ -42,7 +42,7 @@ const REALTIC_DEFAULTS = [
 
 const REALTIC_NAME = '/^[A-Za-z0-9_.-]{1,64}$/';
 
-/** Merged settings: defaults, config.php, and the REALTIC_* environment variables of the test harness. */
+/** Merged settings: defaults, config.php, and the REALTIC_* environment variables of the integration tests. */
 function realtic_config(): array
 {
     $config = REALTIC_DEFAULTS;
