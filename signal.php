@@ -37,6 +37,7 @@ const REALTIC_DEFAULTS = [
     'client_log_dir' => null,
     'client_log_max_bytes' => 16777216,
     'client_log_files' => 5,
+    'client_dir' => null,
     'test_controls' => null,
 ];
 
@@ -57,6 +58,10 @@ function realtic_config(): array
     $db = getenv('REALTIC_DB');
     if ($db !== false && $db !== '') {
         $config['db'] = $db;
+    }
+    $clientDir = getenv('REALTIC_CLIENT_DIR');
+    if ($clientDir !== false && $clientDir !== '') {
+        $config['client_dir'] = $clientDir;
     }
     $clientLogDir = getenv('REALTIC_CLIENT_LOG_DIR');
     if ($clientLogDir !== false && $clientLogDir !== '') {

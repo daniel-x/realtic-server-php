@@ -19,4 +19,7 @@ return [
     // 'client_log_dir' => '/var/log/realtic',
     'client_log_max_bytes' => 16777216,
     'client_log_files' => 5,
+    // router.php only: the realtic client files (library and demos), e.g. a git checkout or
+    // node_modules/realtic. Default: a realtic checkout next to this directory.
+    // 'client_dir' => '/srv/realtic',
 ];
